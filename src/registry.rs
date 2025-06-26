@@ -11,8 +11,34 @@ use fs_err as fs;
 
 use super::{iso_3166, iso_639_2, iso_639_3, Error, Language, Locale, Territory};
 
-/// All ISO codes are expected to live in this location
-const ISO_CODES_BASE: &str = "/usr/share/iso-codes/json";
+fn find_iso_codes_base() -> Result<String, Error> {
+    use std::env;
+
+    let candidates = env::var("XDG_DATA_DIRS")
+        .ok()
+        .map(|dirs| {
+            dirs.split(':')
+                .map(|dir| format!("{dir}/iso-codes/json"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "/usr/local/share/iso-codes/json".into(),
+                "/usr/share/iso-codes/json".into(),
+            ]
+        });
+
+    for path in candidates {
+        if fs::metadata(format!("{}/iso_3166-1.json", &path)).is_ok() {
+            return Ok(path);
+        }
+    }
+
+    Err(Error::IO(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "No iso-codes json data found in XDG_DATA_DIRS, /usr/local/share/iso-codes/json or /usr/share/iso-codes/json",
+    )))
+}
 
 /// Manage locales + territories
 pub struct Registry {
@@ -25,7 +51,8 @@ pub struct Registry {
 impl Registry {
     /// Create a new locale registry from the system iso-code JSON definitions
     pub fn new() -> Result<Self, Error> {
-        let places = Self::load_territories()?;
+        let iso_codes_base = find_iso_codes_base()?;
+        let places = Self::load_territories(&iso_codes_base)?;
         let mut places_lookup = HashMap::new();
         for (index, item) in places.iter().enumerate() {
             places_lookup.insert(item.code2.to_lowercase(), index);
@@ -33,8 +60,8 @@ impl Registry {
         }
 
         //  Convert all languages into usable ones with mapping
-        let mut languages = Self::load_languages_2()?;
-        languages.extend(Self::load_languages_3()?);
+        let mut languages = Self::load_languages_2(&iso_codes_base)?;
+        languages.extend(Self::load_languages_3(&iso_codes_base)?);
         let mut languages_lookup = HashMap::new();
         for (index, language) in languages.iter().enumerate() {
             if let Some(code2) = language.code2.as_ref() {
@@ -52,9 +79,9 @@ impl Registry {
     }
 
     /// Load all the territories
-    fn load_territories() -> Result<Vec<Territory>, Error> {
+    fn load_territories(base: &str) -> Result<Vec<Territory>, Error> {
         // Load the territories in
-        let territories = format!("{}/iso_3166-1.json", ISO_CODES_BASE);
+        let territories = format!("{base}/iso_3166-1.json");
         let contents = fs::read_to_string(territories)?;
         let parser = serde_json::from_str::<iso_3166::Document<'_>>(&contents)?;
 
@@ -62,8 +89,8 @@ impl Registry {
     }
 
     /// Load the 2 DB
-    fn load_languages_2() -> Result<Vec<Language>, Error> {
-        let languages = format!("{}/iso_639-2.json", ISO_CODES_BASE);
+    fn load_languages_2(base: &str) -> Result<Vec<Language>, Error> {
+        let languages = format!("{base}/iso_639-2.json");
         let contents = fs::read_to_string(languages)?;
         let parser = serde_json::from_str::<iso_639_2::Document<'_>>(&contents)?;
 
@@ -71,8 +98,8 @@ impl Registry {
     }
 
     /// Load the 3 DB
-    fn load_languages_3() -> Result<Vec<Language>, Error> {
-        let languages = format!("{}/iso_639-3.json", ISO_CODES_BASE);
+    fn load_languages_3(base: &str) -> Result<Vec<Language>, Error> {
+        let languages = format!("{base}/iso_639-3.json");
         let contents = fs::read_to_string(languages)?;
         let parser = serde_json::from_str::<iso_639_3::Document<'_>>(&contents)?;
 
